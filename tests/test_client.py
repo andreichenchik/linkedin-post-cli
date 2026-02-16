@@ -5,8 +5,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from linkedin.cli import main
-from linkedin.client import LinkedInClient, _MAX_IMAGE_SIZE
+from linkedin_post.cli import main
+from linkedin_post.client import LinkedInClient, _MAX_IMAGE_SIZE
+
+from helpers import DictConfigStore
 
 
 @pytest.fixture
@@ -98,7 +100,6 @@ class TestCreatePost:
             mock_post.return_value = _error_response(403)
             with pytest.raises(Exception):
                 client.create_post("nope")
-
 
 
 class TestUploadImage:
@@ -215,14 +216,27 @@ class TestCreatePostWithImage:
 
 class TestCLIValidation:
     def test_rejects_text_over_3000_chars(self) -> None:
+        config = DictConfigStore({"client_id": "id", "client_secret": "sec"})
         long_text = "a" * 3001
         with pytest.raises(SystemExit):
-            main([long_text])
+            main([long_text], _config=config)
 
     def test_rejects_empty_text(self) -> None:
+        config = DictConfigStore({"client_id": "id", "client_secret": "sec"})
         with pytest.raises(SystemExit), patch("sys.stdin") as mock_stdin:
             mock_stdin.read.return_value = ""
-            main([])
+            main([], _config=config)
+
+    def test_exits_when_credentials_missing(self) -> None:
+        config = DictConfigStore()
+        with pytest.raises(SystemExit), patch("builtins.input", return_value=""):
+            main(["Hello"], _config=config)
+
+    def test_shows_setup_guide_when_credentials_missing(self, capsys: pytest.CaptureFixture[str]) -> None:
+        config = DictConfigStore()
+        with pytest.raises(SystemExit), patch("builtins.input", return_value=""):
+            main(["Hello"], _config=config)
+        assert "First-time setup" in capsys.readouterr().out
 
 
 class TestCLIImage:
@@ -234,27 +248,60 @@ class TestCLIImage:
         mock_client.upload_image.return_value = "urn:li:image:ABC"
         mock_client.create_post.return_value = "urn:li:share:999"
 
+        config = DictConfigStore({
+            "client_id": "id", "client_secret": "sec", "access_token": "tok",
+        })
+
         with (
-            patch("linkedin.cli.LinkedInClient", return_value=mock_client),
-            patch("linkedin.cli._ensure_token", return_value="tok"),
-            patch("linkedin.cli.dotenv"),
-            patch.dict("os.environ", {"CLIENT_ID": "id", "CLIENT_SECRET": "sec"}),
+            patch("linkedin_post.cli.LinkedInClient", return_value=mock_client),
+            patch("linkedin_post.cli.is_token_valid", return_value=True),
         ):
-            main(["Hello", "--image", str(img)])
+            main(["Hello", "--image", str(img)], _config=config)
 
         mock_client.upload_image.assert_called_once_with(img)
         mock_client.create_post.assert_called_once_with(
-            "Hello", connections_only=False, image_urn="urn:li:image:ABC"
+            "Hello", connections_only=False, image_urn="urn:li:image:ABC",
         )
 
     def test_exits_when_image_not_found(self) -> None:
+        config = DictConfigStore({
+            "client_id": "id", "client_secret": "sec", "access_token": "tok",
+        })
+
         with (
-            patch("linkedin.cli._ensure_token", return_value="tok"),
-            patch("linkedin.cli.dotenv"),
-            patch.dict("os.environ", {"CLIENT_ID": "id", "CLIENT_SECRET": "sec"}),
+            patch("linkedin_post.cli.is_token_valid", return_value=True),
             pytest.raises(SystemExit),
         ):
-            main(["Hello", "--image", "/nonexistent/photo.png"])
+            main(["Hello", "--image", "/nonexistent/photo.png"], _config=config)
+
+
+class TestCLIResetFlags:
+    def test_reset_keys_clears_all_credentials(self) -> None:
+        config = DictConfigStore({
+            "client_id": "id", "client_secret": "sec", "access_token": "tok",
+        })
+        with pytest.raises(SystemExit), patch("builtins.input", return_value=""):
+            main(["Hello", "--reset-keys"], _config=config)
+        assert config.get("client_id") is None
+        assert config.get("client_secret") is None
+        assert config.get("access_token") is None
+
+    def test_reset_auth_clears_token_only(self) -> None:
+        config = DictConfigStore({
+            "client_id": "id", "client_secret": "sec", "access_token": "tok",
+        })
+        mock_client = MagicMock()
+        mock_client.create_post.return_value = "urn:li:share:1"
+
+        with (
+            patch("linkedin_post.cli.authenticate", return_value="new-tok"),
+            patch("linkedin_post.cli.LinkedInClient", return_value=mock_client),
+        ):
+            main(["Hello", "--reset-auth"], _config=config)
+
+        assert config.get("client_id") == "id"
+        assert config.get("client_secret") == "sec"
+        assert config.get("access_token") == "new-tok"
 
 
 # --- helpers ---

@@ -1,14 +1,15 @@
 [project]
-name = "linkedin-post"
+name = "linkedin-post-cli"
 version = "0.1.0"
 requires-python = ">=3.11"
-dependencies = ["requests", "python-dotenv"]
+dependencies = ["requests"]
 
 [project.scripts]
-linkedin-post = "linkedin.cli:main"
+linkedin-post-cli = "linkedin_post.cli:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["tests"]
 
 [build-system]
 requires = ["hatchling"]
@@ -20,4 +21,4 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/linkedin"]
+packages = ["src/linkedin_post"]
