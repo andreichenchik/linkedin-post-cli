@@ -1,11 +1,12 @@
 """Unit tests for LinkedInClient and CLI."""
 
+import pathlib
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from linkedin.cli import main
-from linkedin.client import LinkedInClient
+from linkedin.client import LinkedInClient, _MAX_IMAGE_SIZE
 
 
 @pytest.fixture
@@ -100,6 +101,118 @@ class TestCreatePost:
 
 
 
+class TestUploadImage:
+    def test_returns_image_urn(self, client: LinkedInClient, tmp_path: pathlib.Path) -> None:
+        img = tmp_path / "photo.png"
+        img.write_bytes(b"\x89PNG" + b"\x00" * 100)
+
+        init_resp = _ok_response({
+            "value": {
+                "uploadUrl": "https://linkedin.com/upload/xyz",
+                "image": "urn:li:image:C123",
+            }
+        })
+        put_resp = MagicMock(ok=True)
+
+        with (
+            patch.object(
+                client._session, "get", return_value=_ok_response({"sub": "u1"})
+            ),
+            patch.object(client._session, "post", return_value=init_resp),
+            patch.object(client._session, "put", return_value=put_resp),
+        ):
+            urn = client.upload_image(img)
+
+        assert urn == "urn:li:image:C123"
+
+    def test_rejects_unsupported_format(
+        self, client: LinkedInClient, tmp_path: pathlib.Path
+    ) -> None:
+        img = tmp_path / "photo.bmp"
+        img.write_bytes(b"\x00" * 10)
+
+        with pytest.raises(ValueError, match="Unsupported image format"):
+            client.upload_image(img)
+
+    def test_rejects_oversized_file(
+        self, client: LinkedInClient, tmp_path: pathlib.Path
+    ) -> None:
+        img = tmp_path / "huge.png"
+        img.write_bytes(b"\x00" * (_MAX_IMAGE_SIZE + 1))
+
+        with pytest.raises(ValueError, match="Image too large"):
+            client.upload_image(img)
+
+    def test_raises_on_init_upload_error(
+        self, client: LinkedInClient, tmp_path: pathlib.Path
+    ) -> None:
+        img = tmp_path / "photo.jpg"
+        img.write_bytes(b"\xff\xd8" + b"\x00" * 100)
+
+        with (
+            patch.object(
+                client._session, "get", return_value=_ok_response({"sub": "u1"})
+            ),
+            patch.object(
+                client._session, "post", return_value=_error_response(500)
+            ),
+        ):
+            with pytest.raises(Exception):
+                client.upload_image(img)
+
+    def test_raises_on_upload_error(
+        self, client: LinkedInClient, tmp_path: pathlib.Path
+    ) -> None:
+        img = tmp_path / "photo.jpg"
+        img.write_bytes(b"\xff\xd8" + b"\x00" * 100)
+
+        init_resp = _ok_response({
+            "value": {
+                "uploadUrl": "https://linkedin.com/upload/xyz",
+                "image": "urn:li:image:C123",
+            }
+        })
+        put_resp = _error_response(500)
+
+        with (
+            patch.object(
+                client._session, "get", return_value=_ok_response({"sub": "u1"})
+            ),
+            patch.object(client._session, "post", return_value=init_resp),
+            patch.object(client._session, "put", return_value=put_resp),
+        ):
+            with pytest.raises(Exception):
+                client.upload_image(img)
+
+
+class TestCreatePostWithImage:
+    def test_includes_image_content_in_body(self, client: LinkedInClient) -> None:
+        with (
+            patch.object(
+                client._session, "get", return_value=_ok_response({"sub": "u1"})
+            ),
+            patch.object(client._session, "post") as mock_post,
+        ):
+            mock_post.return_value = _created_response("urn:li:share:999")
+            client.create_post("With image", image_urn="urn:li:image:C123")
+
+            body = mock_post.call_args.kwargs["json"]
+            assert body["content"] == {"media": {"id": "urn:li:image:C123"}}
+
+    def test_omits_content_when_no_image(self, client: LinkedInClient) -> None:
+        with (
+            patch.object(
+                client._session, "get", return_value=_ok_response({"sub": "u1"})
+            ),
+            patch.object(client._session, "post") as mock_post,
+        ):
+            mock_post.return_value = _created_response("urn:li:share:999")
+            client.create_post("Text only")
+
+            body = mock_post.call_args.kwargs["json"]
+            assert "content" not in body
+
+
 class TestCLIValidation:
     def test_rejects_text_over_3000_chars(self) -> None:
         long_text = "a" * 3001
@@ -110,6 +223,38 @@ class TestCLIValidation:
         with pytest.raises(SystemExit), patch("sys.stdin") as mock_stdin:
             mock_stdin.read.return_value = ""
             main([])
+
+
+class TestCLIImage:
+    def test_passes_image_urn_to_create_post(self, tmp_path: pathlib.Path) -> None:
+        img = tmp_path / "pic.png"
+        img.write_bytes(b"\x89PNG" + b"\x00" * 100)
+
+        mock_client = MagicMock()
+        mock_client.upload_image.return_value = "urn:li:image:ABC"
+        mock_client.create_post.return_value = "urn:li:share:999"
+
+        with (
+            patch("linkedin.cli.LinkedInClient", return_value=mock_client),
+            patch("linkedin.cli._ensure_token", return_value="tok"),
+            patch("linkedin.cli.dotenv"),
+            patch.dict("os.environ", {"CLIENT_ID": "id", "CLIENT_SECRET": "sec"}),
+        ):
+            main(["Hello", "--image", str(img)])
+
+        mock_client.upload_image.assert_called_once_with(img)
+        mock_client.create_post.assert_called_once_with(
+            "Hello", connections_only=False, image_urn="urn:li:image:ABC"
+        )
+
+    def test_exits_when_image_not_found(self) -> None:
+        with (
+            patch("linkedin.cli._ensure_token", return_value="tok"),
+            patch("linkedin.cli.dotenv"),
+            patch.dict("os.environ", {"CLIENT_ID": "id", "CLIENT_SECRET": "sec"}),
+            pytest.raises(SystemExit),
+        ):
+            main(["Hello", "--image", "/nonexistent/photo.png"])
 
 
 # --- helpers ---

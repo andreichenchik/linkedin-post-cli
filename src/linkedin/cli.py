@@ -26,6 +26,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Visible to 1st-degree connections only (default: public)",
     )
     parser.add_argument(
+        "--image",
+        type=pathlib.Path,
+        metavar="PATH",
+        help="Attach an image (jpg/png/gif, max 100 MB)",
+    )
+    parser.add_argument(
         "--auth",
         action="store_true",
         help="Force re-authorization even if a token exists",
@@ -91,7 +97,21 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(1)
 
     client = LinkedInClient(token)
-    post_urn = client.create_post(text, connections_only=args.connections_only)
+
+    image_urn = None
+    if args.image:
+        if not args.image.exists():
+            print(f"Image not found: {args.image}", file=sys.stderr)
+            sys.exit(1)
+        try:
+            image_urn = client.upload_image(args.image)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            sys.exit(1)
+
+    post_urn = client.create_post(
+        text, connections_only=args.connections_only, image_urn=image_urn
+    )
     post_url = f"https://www.linkedin.com/feed/update/{post_urn}/"
     visibility = "connections only" if args.connections_only else "public"
     print(f"Post published ({visibility})!")
